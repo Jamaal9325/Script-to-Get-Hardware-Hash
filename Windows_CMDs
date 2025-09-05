@@ -1,2 +1,4 @@
 Unregister-PSRepository -Name "PSGallery"
+Get-Package
+Get-PSRepository
 Uninstall-PackageProvider -Name NuGet -Force
