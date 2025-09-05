@@ -1,0 +1,105 @@
+# ===========================
+# Autopilot Hardware Hash Collector (Admin)
+# Saves CSV to C:\HWID and Desktop, restores security settings afterward
+# ===========================
+
+# 1) Require Admin
+$IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $IsAdmin) {
+    Write-Host "ERROR: Please run PowerShell as Administrator (right-click → Run as administrator)." -ForegroundColor Red
+    exit 1
+}
+Write-Host "Confirmed: PowerShell is running elevated (Admin)." -ForegroundColor Green
+
+# 2) Prep paths & TLS
+$OutDir = 'C:\HWID'
+$OutFile = Join-Path $OutDir 'AutopilotHWID.csv'
+$DesktopCopy = Join-Path ([Environment]::GetFolderPath('Desktop')) 'AutopilotHWID.csv'
+
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+
+# 3) Create output directory
+New-Item -ItemType Directory -Path $OutDir -ErrorAction SilentlyContinue | Out-Null
+Set-Location $OutDir
+
+# 4) Temporarily relax execution policy (PROCESS scope) and remember prior value
+$origEP = (Get-ExecutionPolicy -Scope Process) 2>$null
+try {
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+    Write-Host "ExecutionPolicy (Process) temporarily set to Bypass." -ForegroundColor Yellow
+} catch {
+    Write-Host "Warning: Could not set ExecutionPolicy (Process). You may see prompts." -ForegroundColor Yellow
+}
+
+# 5) Ensure NuGet provider (CurrentUser)
+try {
+    if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+        Write-Host "NuGet provider installed (CurrentUser)." -ForegroundColor Green
+    }
+} catch {
+    Write-Host "Warning: NuGet provider installation issue (continuing)." -ForegroundColor Yellow
+}
+
+# 6) Ensure modern PowerShellGet (CurrentUser), then trust PSGallery
+$minPSGetVer = [Version]"2.2.5"
+try {
+    $psget = Get-Module PowerShellGet -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $psget -or $psget.Version -lt $minPSGetVer) {
+        Write-Host "Installing/updating PowerShellGet (CurrentUser)..." -ForegroundColor Yellow
+        Install-Module PowerShellGet -Force -Scope CurrentUser -AllowClobber
+        Import-Module PowerShellGet -Force
+    } else {
+        Import-Module PowerShellGet -Force
+    }
+    if (Get-Command Set-PSRepository -ErrorAction SilentlyContinue) {
+        $repo = Get-PSRepository -Name 'PSGallery' -ErrorAction SilentlyContinue
+        if ($repo -and $repo.InstallationPolicy -ne 'Trusted') {
+            Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted
+            Write-Host "PSGallery set to Trusted." -ForegroundColor Green
+        }
+    }
+} catch {
+    Write-Host "Warning: Could not fully update PowerShellGet/PSGallery trust (continuing)." -ForegroundColor Yellow
+}
+
+# 7) Install the Autopilot info script (no -AcceptLicense for older PSGet)
+try {
+    Install-Script -Name Get-WindowsAutopilotInfo -Force -Scope CurrentUser -ErrorAction Stop
+    Write-Host "Get-WindowsAutopilotInfo script installed." -ForegroundColor Green
+} catch {
+    Write-Host "ERROR: Failed to install Get-WindowsAutopilotInfo. Check internet/proxy/PSGallery policy." -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    throw
+}
+
+# 8) Collect the hardware hash -> CSV
+try {
+    Get-WindowsAutopilotInfo -OutputFile $OutFile -ErrorAction Stop
+    Copy-Item -Path $OutFile -Destination $DesktopCopy -Force
+
+    Write-Host ""
+    Write-Host "SUCCESS: Hardware hash exported." -ForegroundColor Green
+    Write-Host " - Main file:    $OutFile"
+    Write-Host " - Desktop copy: $DesktopCopy"
+    Write-Host ""
+    Write-Host "Please send the CSV back to IT." -ForegroundColor Cyan
+} catch {
+    Write-Host "ERROR: Failed to generate the Autopilot CSV. Details:" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    throw
+}
+finally {
+    # 9) Restore ExecutionPolicy (Process) to prior value (or Undefined if none)
+    try {
+        $targetEP = if ($null -ne $origEP -and $origEP.ToString().Length -gt 0) { $origEP } else { 'Undefined' }
+        Set-ExecutionPolicy -Scope Process -ExecutionPolicy $targetEP -Force
+        Write-Host "ExecutionPolicy (Process) restored to: $targetEP" -ForegroundColor Yellow
+    } catch {
+        Write-Host "Note: Could not restore ExecutionPolicy (Process). It will reset when this PowerShell window closes." -ForegroundColor Yellow
+    }
+}
+
+Write-Host "All done. You can close this window." -ForegroundColor Green
