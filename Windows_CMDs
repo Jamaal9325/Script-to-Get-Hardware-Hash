@@ -1,3 +1,4 @@
+Get-WindowsAutopilotInfo
 Unregister-PSRepository -Name "PSGallery"
 Get-Package
 Get-PSRepository
